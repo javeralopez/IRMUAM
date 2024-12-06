@@ -1,0 +1,7 @@
+streamlit
+feedparser
+python-docx
+beautifulsoup4
+requests
+lxml
+nltk
