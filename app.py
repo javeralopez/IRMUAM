@@ -31,6 +31,192 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded"
 )
+def separar_palabras(texto):
+    """
+    Separa y limpia el texto, corrigiendo espacios y puntuación
+    """
+    # Reemplazar múltiples espacios con un solo espacio
+    texto = ' '.join(texto.split())
+
+    # Asegurar espacios después de puntuación
+    for punct in ['.', ',', ';', ':', '!', '?']:
+        texto = texto.replace(punct, punct + ' ')
+
+    # Corregir espacios múltiples
+    texto = ' '.join(texto.split())
+
+    # Corregir espacios antes de puntuación
+    for punct in [' .', ' ,', ' ;', ' :', ' !', ' ?']:
+        texto = texto.replace(punct, punct.strip())
+
+    # Separar palabras con mayúsculas en medio
+    palabras = []
+    for palabra in texto.split():
+        if any(c.isupper() for c in palabra[1:]):
+            nueva_palabra = ''
+            for i, c in enumerate(palabra):
+                if i > 0 and c.isupper():
+                    nueva_palabra += ' ' + c
+                else:
+                    nueva_palabra += c
+            palabras.extend(nueva_palabra.split())
+        else:
+            palabras.append(palabra)
+
+    return ' '.join(palabras)
+
+def limpiar_resumen(texto, titulo):
+    """
+    Limpia el texto del resumen eliminando elementos no deseados
+    """
+    try:
+        texto = BeautifulSoup(texto, 'lxml').get_text()
+        texto = separar_palabras(texto)
+
+        # Eliminar URLs
+        texto = re.sub(r'http\S+', '', texto)
+
+        # Eliminar textos no deseados
+        textos_no_deseados = [
+            'Lea también', 'Lea más', 'Relacionado', 'Compartir',
+            'facebook', 'twitter', 'RELACIONADO:', 'Etiquetas:',
+            'Tags:', 'Autor:', titulo, 'The post',
+            'first appeared on', 'appeared first on',
+            'Noticias Prensa Latina', 'Noticias.',
+            'Cubadebate', 'OnCuba'
+        ]
+
+        for texto_no_deseado in textos_no_deseados:
+            texto = texto.replace(texto_no_deseado, '')
+
+        # Limpieza final
+        texto = ' '.join(texto.split()).strip()
+        if texto and not texto.endswith('.'):
+            texto += '.'
+
+        return texto
+
+    except Exception as e:
+        st.error(f"Error limpiando resumen: {str(e)}")
+        return texto
+
+def generar_resumen_mejorado(texto, min_palabras=80, max_palabras=100):
+    """
+    Genera un resumen del texto entre min_palabras y max_palabras
+    """
+    try:
+        # Limpieza inicial
+        texto = texto.replace('\n', ' ')
+        texto = limpiar_resumen(texto, '')
+
+        palabras_total = len(texto.split())
+        if palabras_total <= max_palabras:
+            return texto
+
+        oraciones = nltk.sent_tokenize(texto)
+        oraciones_importantes = []
+        palabras_acumuladas = 0
+
+        # Incluir primera oración siempre
+        primera_oracion = oraciones[0]
+        oraciones_importantes.append(primera_oracion)
+        palabras_acumuladas += len(primera_oracion.split())
+
+        # Procesar resto de oraciones
+        for oracion in oraciones[1:]:
+            palabras_oracion = len(oracion.split())
+
+            if palabras_acumuladas < min_palabras:
+                oraciones_importantes.append(oracion)
+                palabras_acumuladas += palabras_oracion
+                continue
+
+            if min_palabras <= palabras_acumuladas <= max_palabras:
+                if palabras_acumuladas + palabras_oracion <= max_palabras + 10:
+                    oraciones_importantes.append(oracion)
+                    palabras_acumuladas += palabras_oracion
+                else:
+                    break
+
+        resumen_texto = ' '.join(oraciones_importantes)
+        resumen_texto = separar_palabras(resumen_texto)
+
+        if not resumen_texto.endswith(('.', '!', '?', '...')):
+            resumen_texto += '...'
+
+        return resumen_texto
+
+    except Exception as e:
+        st.error(f"Error en generación de resumen: {str(e)}")
+        return texto[:500] + '...'
+
+def crear_documento_word(noticias, output):
+    """
+    Crea un documento Word con las noticias recopiladas
+    """
+    try:
+        doc = Document()
+
+        # Configurar estilo
+        style = doc.styles['Normal']
+        style.font.name = 'Arial'
+        style.font.size = Pt(11)
+
+        # Título principal
+        titulo = doc.add_heading('Resumen de Noticias de Cuba', 0)
+        titulo.alignment = WD_ALIGN_PARAGRAPH.CENTER
+
+        # Fecha actual
+        fecha = doc.add_paragraph()
+        fecha.add_run(datetime.now().strftime("%d de %B de %Y")).bold = True
+        fecha.alignment = WD_ALIGN_PARAGRAPH.CENTER
+
+        doc.add_paragraph()
+
+        # Organizar noticias por fuente
+        fuentes = {
+            'OnCuba News': [],
+            'Cubadebate': [],
+            'Prensa Latina': []
+        }
+
+        for noticia in noticias:
+            if noticia['fuente'] in fuentes:
+                fuentes[noticia['fuente']].append(noticia)
+
+        # Agregar noticias por cada fuente
+        for fuente, noticias_fuente in fuentes.items():
+            if noticias_fuente:
+                doc.add_heading(f'Noticias de {fuente}', 1)
+
+                for i, noticia in enumerate(noticias_fuente, 1):
+                    # Título de la noticia
+                    doc.add_heading(f"{i}. {noticia['titulo']}", level=2)
+
+                    # Metadatos
+                    meta = doc.add_paragraph()
+                    meta.add_run(f"Fecha: {noticia['fecha']}\n").italic = True
+                    meta.add_run(f"Fuente: {noticia['url']}").italic = True
+
+                    # Resumen
+                    doc.add_paragraph()
+                    p = doc.add_paragraph()
+                    p.add_run(noticia['resumen'])
+
+                    # Separador
+                    doc.add_paragraph('_' * 50)
+
+                doc.add_paragraph()
+
+        # Guardar documento
+        if isinstance(output, str):
+            doc.save(output)
+        else:
+            doc.save(output)  # output es un BytesIO object
+
+    except Exception as e:
+        st.error(f"Error creando documento Word: {str(e)}")
+        raise e
 
 # Aplicar estilo CSS personalizado
 st.markdown("""
@@ -93,6 +279,253 @@ def mostrar_progreso(texto):
 
 # [Aquí van todas las funciones de procesamiento que ya teníamos]
 # separar_palabras(), limpiar_resumen(), generar_resumen_mejorado(), etc.
+
+def obtener_contenido_completo(url, headers=None):
+    if headers is None:
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'Accept-Language': 'es-ES,es;q=0.9,en;q=0.8'
+        }
+
+    try:
+        response = requests.get(url, headers=headers, timeout=30)
+        if response.status_code == 200:
+            soup = BeautifulSoup(response.text, 'lxml')
+
+            content_selectors = [
+                '.jeg_post_content',
+                '.content-inner',
+                '.entry-content',
+                '.post-content',
+                'article .content',
+                '.article-content',
+                '.content-area'
+            ]
+
+            for selector in content_selectors:
+                content = soup.select_one(selector)
+                if content:
+                    paragraphs = content.find_all('p')
+                    if paragraphs:
+                        texto = ' '.join(p.get_text(strip=True) for p in paragraphs)
+                        if len(texto) > 100:
+                            return texto
+
+        return ""
+    except Exception as e:
+        st.error(f"Error obteniendo contenido completo: {str(e)}")
+        return ""
+
+def obtener_noticias_oncuba():
+    st.write("Obteniendo noticias de OnCuba News...")
+
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'es-ES,es;q=0.9,en;q=0.8'
+    }
+
+    urls = [
+        'https://oncubanews.com/cuba/',
+        'https://oncubanews.com/noticias/'
+    ]
+
+    noticias = []
+    urls_procesadas = set()
+
+    for url in urls:
+        try:
+            st.write(f"Conectando a: {url}")
+            response = requests.get(url, headers=headers, timeout=15)
+
+            if response.status_code == 200:
+                soup = BeautifulSoup(response.text, 'lxml')
+                articles = soup.select('div.jeg_posts article') or soup.select('article.jeg_post')
+
+                if articles:
+                    for article in articles[:10]:
+                        try:
+                            titulo_elem = article.select_one('h3.jeg_post_title a')
+                            if not titulo_elem:
+                                continue
+
+                            titulo = titulo_elem.get_text(strip=True)
+                            link = titulo_elem['href']
+
+                            if link in urls_procesadas:
+                                continue
+
+                            urls_procesadas.add(link)
+
+                            fecha_elem = article.select_one('.jeg_meta_date a')
+                            fecha = fecha_elem.get_text(strip=True) if fecha_elem else datetime.now().strftime('%d/%m/%Y')
+
+                            st.write(f"Procesando: {titulo}")
+
+                            contenido = obtener_contenido_completo(link, headers)
+
+                            if not contenido:
+                                excerpt = article.select_one('.jeg_post_excerpt p')
+                                if excerpt:
+                                    contenido = excerpt.get_text(strip=True)
+
+                            if contenido and len(contenido.split()) >= 80:
+                                resumen = generar_resumen_mejorado(contenido)
+
+                                noticias.append({
+                                    'titulo': titulo,
+                                    'texto': contenido,
+                                    'resumen': resumen,
+                                    'url': link,
+                                    'fecha': fecha,
+                                    'fuente': 'OnCuba News'
+                                })
+
+                                st.write("✓ Noticia procesada exitosamente")
+
+                            if len(noticias) >= 5:
+                                return noticias
+
+                            time.sleep(random.uniform(1, 2))
+
+                        except Exception as e:
+                            st.error(f"Error procesando artículo: {str(e)}")
+                            continue
+
+        except Exception as e:
+            st.error(f"Error con {url}: {str(e)}")
+            continue
+
+    return noticias
+
+def obtener_noticias_cubadebate():
+    try:
+        st.write("Obteniendo noticias de Cubadebate...")
+
+        url = "http://www.cubadebate.cu/feed"
+        feed = feedparser.parse(url)
+
+        if not feed.entries:
+            st.warning("No se encontraron noticias en Cubadebate")
+            return []
+
+        noticias = []
+        for entrada in feed.entries[:5]:
+            try:
+                titulo = entrada.title.strip()
+                url_noticia = entrada.link
+
+                st.write(f"Procesando: {titulo}")
+
+                contenido = obtener_contenido_completo(url_noticia)
+                if not contenido and hasattr(entrada, 'summary'):
+                    contenido = entrada.summary
+
+                contenido = limpiar_resumen(contenido, titulo)
+                resumen = generar_resumen_mejorado(contenido)
+
+                if hasattr(entrada, 'published_parsed'):
+                    fecha = time.strftime('%d/%m/%Y %H:%M', entrada.published_parsed)
+                else:
+                    fecha = datetime.now().strftime('%d/%m/%Y %H:%M')
+
+                noticias.append({
+                    'titulo': titulo,
+                    'texto': contenido,
+                    'resumen': resumen,
+                    'url': url_noticia,
+                    'fecha': fecha,
+                    'fuente': 'Cubadebate'
+                })
+
+                st.write("✓ Noticia procesada exitosamente")
+
+                time.sleep(2)
+
+            except Exception as e:
+                st.error(f"Error procesando noticia: {str(e)}")
+                continue
+
+        return noticias
+
+    except Exception as e:
+        st.error(f"Error obteniendo noticias de Cubadebate: {str(e)}")
+        return []
+
+def obtener_noticias_prensa_latina():
+    try:
+        st.write("Obteniendo noticias de Prensa Latina...")
+
+        url = "https://www.prensa-latina.cu/feed"
+        feed = feedparser.parse(url)
+
+        if not feed.entries:
+            st.warning("No se encontraron noticias en Prensa Latina")
+            return []
+
+        noticias = []
+        noticias_procesadas = 0
+
+        for entrada in feed.entries:
+            try:
+                titulo = entrada.title
+                if any(palabra in titulo.lower() for palabra in [
+                    'lista', 'principales temas', 'minuto a minuto',
+                    'suscripción', 'suscribirse'
+                ]):
+                    continue
+
+                titulo = titulo.replace(" - Noticias Prensa Latina", "")
+                titulo = titulo.replace(" | Prensa Latina", "")
+
+                url_noticia = entrada.link
+
+                st.write(f"Procesando: {titulo}")
+
+                contenido = obtener_contenido_completo(url_noticia)
+                if not contenido and hasattr(entrada, 'summary'):
+                    contenido = entrada.summary
+
+                contenido = limpiar_resumen(contenido, titulo)
+                resumen = generar_resumen_mejorado(contenido)
+
+                if len(resumen.split()) < 30:
+                    continue
+
+                if hasattr(entrada, 'published_parsed'):
+                    fecha = time.strftime('%d/%m/%Y %H:%M', entrada.published_parsed)
+                else:
+                    fecha = datetime.now().strftime('%d/%m/%Y %H:%M')
+
+                noticias.append({
+                    'titulo': titulo,
+                    'texto': contenido,
+                    'resumen': resumen,
+                    'url': url_noticia,
+                    'fecha': fecha,
+                    'fuente': 'Prensa Latina'
+                })
+
+                st.write("✓ Noticia procesada exitosamente")
+
+                noticias_procesadas += 1
+                if noticias_procesadas >= 5:
+                    break
+
+                time.sleep(2)
+
+            except Exception as e:
+                st.error(f"Error procesando noticia: {str(e)}")
+                continue
+
+        return noticias
+
+    except Exception as e:
+        st.error(f"Error obteniendo noticias de Prensa Latina: {str(e)}")
+        return []
+
+
 
 # Modificamos la función obtener_todas_las_noticias para mostrar progreso
 def obtener_todas_las_noticias():
